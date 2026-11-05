@@ -4,5 +4,7 @@
         "**/obj": true,
         "**/.server": true,
         "**/.vscode": true,
+        "**/.gitignore": true,
+        "**/StudentServer.csproj": true,
     }
 }
