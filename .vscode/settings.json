@@ -5,7 +5,6 @@
         "**/.server": true,
         "**/.vscode": true,
         "**/.gitignore": true,
-        "**/StudentServer.csproj": true,
         "**/website/.gitkeep": true,
     }
 }
