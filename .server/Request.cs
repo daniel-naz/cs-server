@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 
 namespace Classroom;
-
 // Supplied helper. Students use the public properties and response methods.
 [System.Diagnostics.DebuggerNonUserCode]
 public sealed class Request : IDisposable
@@ -18,19 +17,16 @@ public sealed class Request : IDisposable
     private readonly HttpListenerContext context;
     private readonly string websiteRoot;
     private bool responded;
-
     public string Method => context.Request.HttpMethod;
     public string Path { get; private set; } = "/";
     public NameValueCollection Query { get; private set; } = new NameValueCollection();
     public NameValueCollection Form { get; private set; } = new NameValueCollection();
     public string Body { get; private set; } = "";
-
     internal Request(HttpListenerContext context, string websiteRoot)
     {
         this.context = context;
         this.websiteRoot = System.IO.Path.GetFullPath(websiteRoot);
     }
-
     internal void ReadInput()
     {
         string raw = context.Request.RawUrl ?? "/";
@@ -40,13 +36,11 @@ public sealed class Request : IDisposable
         if (!Path.StartsWith('/') || Path.Contains('\0'))
             throw new RequestInputException(400, "Invalid path.");
         Query = ParseFields(question < 0 ? "" : raw[(question + 1)..]);
-
         if (context.Request.ContentLength64 > MaxBodyBytes)
             throw new RequestInputException(413, "Request body is too large (maximum 1 MiB).");
 
         if (!context.Request.HasEntityBody)
             return;
-
         using MemoryStream body = new MemoryStream();
         byte[] buffer = new byte[8192];
         int read;
@@ -64,11 +58,9 @@ public sealed class Request : IDisposable
             throw new RequestInputException(415, "File uploads are not supported. Use a normal HTML form.");
         // For JSON or another text format, the student's code can read Body.
     }
-
     public void Text(string text, int statusCode = 200) => Send(text, "text/plain; charset=utf-8", statusCode);
     public void Html(string html, int statusCode = 200) => Send(html, "text/html; charset=utf-8", statusCode);
     public void Json(object? value, int statusCode = 200) => Send(JsonSerializer.Serialize(value, JsonOptions), "application/json; charset=utf-8", statusCode);
-
     public void Redirect(string url)
     {
         if (responded) return;
@@ -77,18 +69,26 @@ public sealed class Request : IDisposable
         context.Response.Headers["Location"] = url;
         Send("", "text/plain; charset=utf-8", 303);
     }
-
     // Relative to website. Cannot read files outside website.
     public void File(string relativePath)
     {
-        if (responded) return;
-        string? filename = ResolvePublicFile(relativePath);
-        if (filename == null)
-        {
+        if (!TryFile(relativePath))
             Text("File not found.", 404);
-            return;
-        }
+    }
 
+    // A missing website file is not an error: the request can reach HandleRequest.
+    internal bool TryServeWebsite()
+    {
+        if (Method != "GET" && Method != "HEAD")
+            return false;
+        return TryFile(Path);
+    }
+
+    private bool TryFile(string relativePath)
+    {
+        if (responded) return true;
+        string? filename = ResolvePublicFile(relativePath);
+        if (filename == null) return false;
         // Open before marking the response as sent, so a failed open can become 500.
         using FileStream stream = System.IO.File.OpenRead(filename);
         responded = true;
@@ -105,8 +105,8 @@ public sealed class Request : IDisposable
             // A browser may navigate away before the response finishes.
         }
         finally { CloseResponse(); }
+        return true;
     }
-
     private void Send(string text, string contentType, int statusCode)
     {
         if (responded) return;
@@ -123,7 +123,6 @@ public sealed class Request : IDisposable
         catch (Exception ex) when (ex is IOException or HttpListenerException or ObjectDisposedException) { }
         finally { CloseResponse(); }
     }
-
     private void SetHeaders()
     {
         context.Response.Headers["X-Content-Type-Options"] = "nosniff";
@@ -136,7 +135,6 @@ public sealed class Request : IDisposable
         try { context.Response.Close(); }
         catch (Exception ex) when (ex is IOException or HttpListenerException or ObjectDisposedException) { }
     }
-
     private static NameValueCollection ParseFields(string encoded)
     {
         NameValueCollection fields = new NameValueCollection();
@@ -149,7 +147,6 @@ public sealed class Request : IDisposable
         }
         return fields;
     }
-
     private string? ResolvePublicFile(string requested)
     {
         // Reject parent paths, Windows paths, hidden files and links/junctions.
@@ -164,12 +161,27 @@ public sealed class Request : IDisposable
             if ((System.IO.File.Exists(filename) || Directory.Exists(filename)) &&
                 (System.IO.File.GetAttributes(filename) & FileAttributes.ReparsePoint) != 0) return null;
         }
-        if (Directory.Exists(filename)) filename = System.IO.Path.Combine(filename, "index.html");
+
+        if (Directory.Exists(filename))
+        {
+            string index = System.IO.Path.Combine(filename, "index.html");
+            if (System.IO.File.Exists(index))
+                filename = index;
+            else if (parts.Length > 0 && !System.IO.Path.HasExtension(filename))
+                filename += ".html";
+            else
+                return null;
+        }
+        else if (!System.IO.File.Exists(filename) && !System.IO.Path.HasExtension(filename))
+        {
+            // /login resolves to website/login.html if no exact file exists.
+            filename += ".html";
+        }
+
         if (!System.IO.File.Exists(filename)) return null;
         if ((System.IO.File.GetAttributes(filename) & FileAttributes.ReparsePoint) != 0) return null;
         return MimeTypes.ContainsKey(System.IO.Path.GetExtension(filename)) ? filename : null;
     }
-
     private static readonly Dictionary<string, string> MimeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         [".html"] = "text/html; charset=utf-8", [".htm"] = "text/html; charset=utf-8",
@@ -182,23 +194,12 @@ public sealed class Request : IDisposable
         [".ttf"] = "font/ttf", [".mp3"] = "audio/mpeg", [".wav"] = "audio/wav",
         [".mp4"] = "video/mp4", [".webm"] = "video/webm", [".wasm"] = "application/wasm"
     };
-
     public void Dispose()
     {
         if (responded) return;
-        try
-        {
-            if (Method == "GET" || Method == "HEAD") File(Path);
-            else Text("No handler for this URL and method.", 404);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine(ex);
-            Text("Could not read this file. Check the console.", 500);
-        }
+        Text("No handler for this URL and method.", 404);
     }
 }
-
 internal sealed class RequestInputException(int statusCode, string message) : Exception(message)
 {
     public int StatusCode { get; } = statusCode;

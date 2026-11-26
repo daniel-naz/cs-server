@@ -8,6 +8,6 @@ class Program
     // This function is called automatically for each browser request.
     public static void HandleRequest(Request request, Database db)
     {
-
+        request.Redirect("/login.html");
     }
 }
